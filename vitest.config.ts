@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: false,
+    fileParallelism: false, // tests share .data/rfqs.json; run files sequentially
   },
   resolve: {
     alias: {

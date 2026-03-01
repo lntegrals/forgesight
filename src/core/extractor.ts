@@ -1,15 +1,21 @@
 /**
  * extractor.ts — Field extraction adapter.
  *
- * MOCK mode (default): deterministic regex/keyword extractor.
- *   Works with no API keys. Demo-safe.
- * LLM mode: calls Anthropic Messages API, validates output with Zod.
- *   Activated when ANTHROPIC_API_KEY is set and mode is ExtractorMode.LLM.
+ * Priority:
+ *   1. Gemini (when GEMINI_API_KEY set): clean → structured extraction
+ *   2. Anthropic LLM (when ANTHROPIC_API_KEY set and mode=LLM)
+ *   3. MOCK — deterministic regex. Demo-safe, no keys required.
  */
 import { z } from "zod";
-import { ExtractorMode, type ExtractedField } from "./types";
+import { ExtractorMode, type ExtractedField, type ExtractionMeta, type RfqCleaning } from "./types";
+import { geminiGenerateJSON } from "./gemini";
 
-// ── Zod schema for validated LLM output ─────────────────────────────────────
+// ── Prompt version constants ──────────────────────────────────────────────────
+
+const CLEAN_PROMPT_VERSION = "gemini-clean-v1";
+const EXTRACT_PROMPT_VERSION = "gemini-extract-v1";
+
+// ── Zod schema for validated LLM output (Anthropic path) ─────────────────────
 
 const ExtractedFieldSchema = z.object({
   key: z.string(),
@@ -26,12 +32,158 @@ export const ExtractedRFQSchema = z.object({
 
 type ExtractedRFQOutput = z.infer<typeof ExtractedRFQSchema>;
 
-// ── Main entry point ─────────────────────────────────────────────────────────
+// ── Gemini JSON schemas ───────────────────────────────────────────────────────
+
+const CLEAN_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    cleanedText: { type: "string" },
+    removedSections: { type: "array", items: { type: "string" } },
+    normalizationNotes: { type: "array", items: { type: "string" } },
+    confidence: { type: "number" },
+  },
+  required: ["cleanedText", "removedSections", "normalizationNotes", "confidence"],
+};
+
+const EXTRACT_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    fields: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          label: { type: "string" },
+          value: { type: "string" },
+          confidence: { type: "number" },
+          sourceSnippet: { type: "string" },
+          sourceRef: { type: "string" },
+        },
+        required: ["key", "label", "value", "confidence", "sourceSnippet", "sourceRef"],
+      },
+    },
+  },
+  required: ["fields"],
+};
+
+// ── cleanRfqText (Gemini) ─────────────────────────────────────────────────────
+
+export async function cleanRfqText(rawText: string): Promise<
+  | { ok: true; cleaning: RfqCleaning; meta: ExtractionMeta }
+  | { ok: false; error: string }
+> {
+  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+
+  const result = await geminiGenerateJSON<{
+    cleanedText: string;
+    removedSections: string[];
+    normalizationNotes: string[];
+    confidence: number;
+  }>({
+    model,
+    system: `You are a manufacturing RFQ pre-processor. Clean and normalize the RFQ text by:
+- Removing email headers, greetings, signatures, repeated disclaimers, forwarding chains
+- Normalizing units and number formats
+- Preserving ALL technical specifications (materials, tolerances, quantities, finish, dates, part numbers)
+Return the cleaned text and describe what was removed.`,
+    user: rawText,
+    responseJsonSchema: CLEAN_RESPONSE_SCHEMA,
+    temperature: 0.1,
+    maxOutputTokens: 2048,
+  });
+
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const now = new Date().toISOString();
+  const cleaning: RfqCleaning = {
+    cleanedText: result.json.cleanedText,
+    removedSections: result.json.removedSections,
+    normalizationNotes: result.json.normalizationNotes,
+    confidence: Math.max(0, Math.min(1, result.json.confidence)),
+  };
+  const meta: ExtractionMeta = {
+    engine: "gemini",
+    model: result.model,
+    promptVersion: CLEAN_PROMPT_VERSION,
+    extractedAt: now,
+    cleanedAt: now,
+  };
+
+  return { ok: true, cleaning, meta };
+}
+
+// ── extractFieldsGemini ───────────────────────────────────────────────────────
+
+export async function extractFieldsGemini(args: {
+  rawText: string;
+  cleanedText?: string;
+}): Promise<{ ok: true; fields: ExtractedField[]; meta: ExtractionMeta } | { ok: false; error: string }> {
+  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  const textToUse = args.cleanedText ?? args.rawText;
+
+  const result = await geminiGenerateJSON<{
+    fields: Array<{
+      key: string;
+      label: string;
+      value: string;
+      confidence: number;
+      sourceSnippet: string;
+      sourceRef: string;
+    }>;
+  }>({
+    model,
+    system: `You are a manufacturing RFQ parser. Extract structured fields from the RFQ text.
+Extract these fields when clearly present: material, quantity, tolerance, finish, dueDate, partNumber, process.
+Omit fields not found. Set confidence 0.0–1.0 based on clarity of evidence.
+For ambiguous values (e.g. "TBD — likely 25-50") set confidence < 0.5.`,
+    user: textToUse,
+    responseJsonSchema: EXTRACT_RESPONSE_SCHEMA,
+    temperature: 0.1,
+    maxOutputTokens: 1024,
+  });
+
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const fields: ExtractedField[] = result.json.fields.map((f) => ({
+    key: f.key,
+    label: f.label,
+    value: f.value,
+    confidence: Math.max(0, Math.min(1, f.confidence)),
+    sourceSnippet: f.sourceSnippet,
+    sourceRef: f.sourceRef,
+    isConfirmed: f.confidence >= 0.85,
+    userOverrideValue: null,
+  }));
+
+  const meta: ExtractionMeta = {
+    engine: "gemini",
+    model: result.model,
+    promptVersion: EXTRACT_PROMPT_VERSION,
+    extractedAt: new Date().toISOString(),
+  };
+
+  return { ok: true, fields, meta };
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function extractFields(
   rawText: string,
   mode: ExtractorMode = ExtractorMode.MOCK
 ): Promise<ExtractedField[]> {
+  // Gemini takes priority when key is set
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const result = await extractFieldsGemini({ rawText });
+      if (result.ok) return result.fields;
+      console.warn("[extractor] Gemini extraction failed, falling back to MOCK:", result.error);
+    } catch (err) {
+      console.warn("[extractor] Gemini extraction threw, falling back to MOCK:", err);
+    }
+  }
+
+  // Anthropic LLM fallback (legacy path)
   if (mode === ExtractorMode.LLM && process.env.ANTHROPIC_API_KEY) {
     try {
       return await extractFieldsLLM(rawText);
@@ -39,10 +191,11 @@ export async function extractFields(
       console.warn("[extractor] LLM extraction failed, falling back to MOCK:", err);
     }
   }
+
   return extractFieldsMock(rawText);
 }
 
-// ── LLM extractor (Anthropic Messages API) ───────────────────────────────────
+// ── LLM extractor (Anthropic Messages API) ────────────────────────────────────
 
 async function extractFieldsLLM(rawText: string): Promise<ExtractedField[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY!;

@@ -40,6 +40,50 @@ export enum ExtractorMode {
   LLM = "LLM",
 }
 
+export type ExtractionEngine = "gemini" | "mock";
+
+export interface ExtractionMeta {
+  engine: ExtractionEngine;
+  model?: string;
+  promptVersion: string;
+  extractedAt: string;   // ISO
+  cleanedAt?: string;    // ISO
+}
+
+export interface RfqCleaning {
+  cleanedText: string;
+  removedSections: string[];
+  normalizationNotes: string[];
+  confidence: number;    // 0..1
+}
+
+export interface ClarifierOutput {
+  questions: Array<{
+    id: string;
+    question: string;
+    options?: string[];
+    required: boolean;
+    rationale: string;
+    confidence: number;
+  }>;
+  assumptions: Array<{
+    id: string;
+    assumption: string;
+    appliesToKeys: string[];
+    confidence: number;
+  }>;
+  riskFlags: Array<{
+    id: string;
+    label: string;
+    severity: "low" | "med" | "high";
+    evidenceSnippet: string;
+  }>;
+  generatedAt: string;   // ISO
+  engine: ExtractionEngine;
+  model?: string;
+  promptVersion: string;
+}
+
 // ── Interfaces ─────────────────────────────────────────────────────────────
 
 export interface ExtractedField {
@@ -127,9 +171,15 @@ export interface RFQ {
   quote: Quote | null;
   audit: AuditEvent[];
   actuals?: Actuals;
-  externalId?: string;         // for webhook deduplication
+  externalId?: string;          // for webhook deduplication
   sourceType?: "manual" | "file" | "webhook";
-  attachmentName?: string;     // original filename if file-uploaded
+  attachmentName?: string;      // original filename if file-uploaded
+  // ── Gemini AI features ──
+  cleaning?: RfqCleaning;
+  extractionMeta?: ExtractionMeta;
+  clarifier?: ClarifierOutput;
+  clarifierAnswers?: Record<string, string>;  // questionId -> answer
+  confirmedAssumptions?: string[];            // assumption ids
 }
 
 // ── Pricing Inputs ─────────────────────────────────────────────────────────

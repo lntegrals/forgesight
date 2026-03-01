@@ -73,6 +73,9 @@ export function getAllRfqs(): RFQ[] {
   );
 }
 
+/** Alias for getAllRfqs — used by query/similarity modules. */
+export const listRfqs = getAllRfqs;
+
 export function getRfq(id: string): RFQ | undefined {
   return getStore().get(id);
 }

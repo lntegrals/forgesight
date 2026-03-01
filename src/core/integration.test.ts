@@ -255,4 +255,59 @@ describe("Integration: Full golden path", () => {
     expect(found!.id).toBe(rfq.id);
     expect(findByExternalId("nonexistent")).toBeUndefined();
   });
+
+  it("/api/rfqs/search returns results deterministically (no GEMINI_API_KEY needed)", async () => {
+    const { searchRFQs } = await import("./query");
+    const { rows: r1 } = await searchRFQs({ q: "reynolds" });
+    const { rows: r2 } = await searchRFQs({ q: "reynolds" });
+    expect(r1.map((r) => r.id)).toEqual(r2.map((r) => r.id));
+  });
+
+  it("quote returns 400 when clarifier exists with unanswered required questions", async () => {
+    const { isClarifierComplete } = await import("./clarifier");
+    const rfq = createRfq({
+      customerName: "Clarifier Test",
+      subject: "Gated Quote",
+      rawText: SAMPLE_RFQ_TEXT,
+    });
+
+    // Inject a clarifier with one required unanswered question
+    updateRfq(rfq.id, {
+      extractedFields: [
+        {
+          key: "material", label: "Material", value: "Aluminum", confidence: 0.95,
+          sourceSnippet: "Material: Aluminum", sourceRef: "Line 1",
+          isConfirmed: true, userOverrideValue: null,
+        },
+      ],
+      clarifier: {
+        questions: [
+          {
+            id: "q1",
+            question: "What exact alloy grade is required?",
+            required: true,
+            rationale: "Affects machinability cost",
+            confidence: 0.9,
+          },
+        ],
+        assumptions: [],
+        riskFlags: [],
+        generatedAt: new Date().toISOString(),
+        engine: "gemini",
+        model: "gemini-2.5-flash",
+        promptVersion: "gemini-clarifier-v1",
+      },
+    });
+
+    const withClarifier = getRfq(rfq.id)!;
+    const { ok, missing } = isClarifierComplete(withClarifier);
+    expect(ok).toBe(false);
+    expect(missing.length).toBeGreaterThan(0);
+
+    // After answering, should be complete
+    updateRfq(rfq.id, { clarifierAnswers: { q1: "6061-T6" } });
+    const answered = getRfq(rfq.id)!;
+    const { ok: ok2 } = isClarifierComplete(answered);
+    expect(ok2).toBe(true);
+  });
 });
