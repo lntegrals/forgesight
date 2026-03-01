@@ -25,11 +25,19 @@ export enum AuditAction {
   FIELD_RESET = "FIELD_RESET",
   QUOTE_GENERATED = "QUOTE_GENERATED",
   EMAIL_SENT = "EMAIL_SENT",
+  ACTUALS_RECORDED = "ACTUALS_RECORDED",
+  WEBHOOK_INGESTED = "WEBHOOK_INGESTED",
+  FILE_INGESTED = "FILE_INGESTED",
 }
 
 export enum Actor {
   SYSTEM = "SYSTEM",
   USER = "USER",
+}
+
+export enum ExtractorMode {
+  MOCK = "MOCK",
+  LLM = "LLM",
 }
 
 // ── Interfaces ─────────────────────────────────────────────────────────────
@@ -75,9 +83,42 @@ export interface AuditEvent {
   detail: string;
 }
 
+// ── Actuals + Variance ──────────────────────────────────────────────────────
+
+export interface Actuals {
+  materialCost: number;    // actual total material cost (dollars)
+  setupHours: number;
+  laborHours: number;
+  machineHours: number;
+  notes?: string;
+  recordedAt: string;      // ISO datetime
+}
+
+export interface VarianceLine {
+  label: string;
+  type: LineItemType;
+  estimate: number;
+  actual: number;
+  delta: number;           // actual - estimate (positive = over budget)
+  deltaPct: number;        // delta / estimate * 100
+}
+
+export interface VarianceReport {
+  lines: VarianceLine[];
+  estimateTotal: number;
+  actualTotal: number;
+  totalDelta: number;
+  totalDeltaPct: number;
+  estimateMarginPct: number;
+  actualMarginPct: number;
+  marginDelta: number;
+}
+
+// ── RFQ ────────────────────────────────────────────────────────────────────
+
 export interface RFQ {
   id: string;
-  createdAt: string; // ISO datetime
+  createdAt: string;           // ISO datetime
   customerName: string;
   subject: string;
   status: RFQStatus;
@@ -85,6 +126,10 @@ export interface RFQ {
   extractedFields: ExtractedField[];
   quote: Quote | null;
   audit: AuditEvent[];
+  actuals?: Actuals;
+  externalId?: string;         // for webhook deduplication
+  sourceType?: "manual" | "file" | "webhook";
+  attachmentName?: string;     // original filename if file-uploaded
 }
 
 // ── Pricing Inputs ─────────────────────────────────────────────────────────
