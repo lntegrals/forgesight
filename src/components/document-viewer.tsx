@@ -1,6 +1,5 @@
 "use client";
 
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useCallback, useRef, useEffect, useState } from "react";
 
 interface DocumentViewerProps {
@@ -31,18 +30,17 @@ export function DocumentViewer({
     const renderHighlightedText = useCallback(() => {
         if (highlightSnippets.length === 0) {
             return rawText.split("\n").map((line, i) => (
-                <div key={i} className="flex">
-                    <span className="mr-4 inline-block w-8 select-none text-right text-xs text-muted-foreground/50">
+                <div key={i} className="flex min-w-0">
+                    <span className="mr-4 w-8 shrink-0 select-none text-right text-xs text-muted-foreground/50">
                         {i + 1}
                     </span>
-                    <span className="flex-1 whitespace-pre-wrap">{line || "\u00A0"}</span>
+                    <span className="min-w-0 flex-1 break-words whitespace-pre-wrap">{line || "\u00A0"}</span>
                 </div>
             ));
         }
 
         // Build highlighted version
         let html = rawText;
-        // Sort snippets by length desc to avoid partial matches
         const sorted = [...highlightSnippets].sort((a, b) => b.length - a.length);
         for (const snippet of sorted) {
             if (!snippet) continue;
@@ -55,12 +53,12 @@ export function DocumentViewer({
         }
 
         return html.split("\n").map((line, i) => (
-            <div key={i} className="flex">
-                <span className="mr-4 inline-block w-8 select-none text-right text-xs text-muted-foreground/50">
+            <div key={i} className="flex min-w-0">
+                <span className="mr-4 w-8 shrink-0 select-none text-right text-xs text-muted-foreground/50">
                     {i + 1}
                 </span>
                 <span
-                    className="flex-1 whitespace-pre-wrap"
+                    className="min-w-0 flex-1 break-words whitespace-pre-wrap"
                     dangerouslySetInnerHTML={{ __html: line || "\u00A0" }}
                 />
             </div>
@@ -68,17 +66,17 @@ export function DocumentViewer({
     }, [rawText, highlightSnippets, activeSnippet]);
 
     return (
-        <div className="flex h-full flex-col rounded-lg border border-border bg-muted/30">
-            <div className="border-b border-border px-4 py-2.5">
+        <div className="flex h-full flex-col rounded-lg border border-border bg-muted/30 overflow-hidden">
+            <div className="border-b border-border px-4 py-2.5 shrink-0">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Document
                 </h3>
             </div>
-            <ScrollArea className="flex-1 p-4" ref={containerRef}>
-                <pre className="font-mono text-[13px] leading-6 text-foreground/90">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden p-4" ref={containerRef}>
+                <div className="font-mono text-[13px] leading-6 text-foreground/90 min-w-0">
                     {renderHighlightedText()}
-                </pre>
-            </ScrollArea>
+                </div>
+            </div>
         </div>
     );
 }

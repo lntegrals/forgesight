@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
     { href: "/inbox", label: "Inbox", icon: Inbox },
-    { href: "#", label: "Settings", icon: Settings, disabled: true },
-    { href: "#", label: "Audit", icon: ClipboardList, disabled: true },
+    { href: "/audit", label: "Audit Log", icon: ClipboardList },
+    { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Sidebar() {
@@ -31,20 +31,17 @@ export function Sidebar() {
             <nav className="flex-1 px-3 py-3">
                 <ul className="space-y-1">
                     {navItems.map((item) => {
-                        const isActive = pathname.startsWith(item.href) && item.href !== "#";
+                        const isActive = pathname.startsWith(item.href);
                         return (
                             <li key={item.label}>
                                 <Link
-                                    href={item.disabled ? "#" : item.href}
+                                    href={item.href}
                                     className={cn(
                                         "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                                         "hover:bg-accent hover:text-accent-foreground",
                                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                         isActive && "bg-accent text-accent-foreground",
-                                        item.disabled && "pointer-events-none opacity-40"
                                     )}
-                                    tabIndex={item.disabled ? -1 : 0}
-                                    aria-disabled={item.disabled}
                                 >
                                     <item.icon className="h-4 w-4" />
                                     {item.label}
