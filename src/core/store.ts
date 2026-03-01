@@ -1,4 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
+import fs from "fs";
+import path from "path";
 import {
   RFQStatus,
   AuditAction,
@@ -9,19 +11,57 @@ import {
 } from "./types";
 import { getSeedRFQs } from "./seed";
 
-// ── In-memory store (server-side singleton) ────────────────────────────────
+// ── File-backed store ─────────────────────────────────────────────────────────
+// Persists to .data/rfqs.json in the project root so data survives:
+//   - HMR module reloads
+//   - Multiple Next.js dev worker processes
+//   - Server restarts
 
-let store: Map<string, RFQ> | null = null;
+const DATA_DIR = path.join(process.cwd(), ".data");
+const DATA_FILE = path.join(DATA_DIR, "rfqs.json");
+
+function readFile(): Map<string, RFQ> {
+  try {
+    if (!fs.existsSync(DATA_FILE)) return seedAndWrite();
+    const raw = fs.readFileSync(DATA_FILE, "utf-8");
+    const arr = JSON.parse(raw) as RFQ[];
+    if (!Array.isArray(arr) || arr.length === 0) return seedAndWrite();
+    const m = new Map<string, RFQ>();
+    for (const rfq of arr) m.set(rfq.id, rfq);
+    return m;
+  } catch {
+    return seedAndWrite();
+  }
+}
+
+function writeFile(m: Map<string, RFQ>): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DATA_FILE, JSON.stringify(Array.from(m.values()), null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[store] Failed to persist data:", err);
+  }
+}
+
+function seedAndWrite(): Map<string, RFQ> {
+  const m = new Map<string, RFQ>();
+  for (const rfq of getSeedRFQs()) m.set(rfq.id, rfq);
+  writeFile(m);
+  return m;
+}
+
+// ── Synchronous store access (reads file on every call, but OS caches it) ─────
+// In Next.js dev with multiple workers we can't use a module-level singleton
+// reliably. Reading from file ensures consistency across workers.
 
 function getStore(): Map<string, RFQ> {
-  if (!store) {
-    store = new Map();
-    const seeds = getSeedRFQs();
-    for (const rfq of seeds) {
-      store.set(rfq.id, rfq);
-    }
-  }
-  return store;
+  return readFile();
+}
+
+function withStore(fn: (m: Map<string, RFQ>) => void): void {
+  const m = readFile();
+  fn(m);
+  writeFile(m);
 }
 
 // ── CRUD helpers ───────────────────────────────────────────────────────────
@@ -45,7 +85,6 @@ export function createRfq(data: {
   sourceType?: "manual" | "file" | "webhook";
   attachmentName?: string;
 }): RFQ {
-  const s = getStore();
   const rfq: RFQ = {
     id: uuidv4(),
     createdAt: new Date().toISOString(),
@@ -67,7 +106,7 @@ export function createRfq(data: {
     ...(data.sourceType ? { sourceType: data.sourceType } : {}),
     ...(data.attachmentName ? { attachmentName: data.attachmentName } : {}),
   };
-  s.set(rfq.id, rfq);
+  withStore((m) => m.set(rfq.id, rfq));
   return rfq;
 }
 
@@ -75,36 +114,44 @@ export function updateRfq(
   id: string,
   patch: Partial<Omit<RFQ, "id" | "createdAt">>
 ): RFQ | undefined {
-  const s = getStore();
-  const existing = s.get(id);
-  if (!existing) return undefined;
-  const updated = { ...existing, ...patch };
-  s.set(id, updated);
+  let updated: RFQ | undefined;
+  withStore((m) => {
+    const existing = m.get(id);
+    if (!existing) return;
+    updated = { ...existing, ...patch };
+    m.set(id, updated);
+  });
   return updated;
 }
 
 export function appendAudit(id: string, event: AuditEvent): void {
-  const s = getStore();
-  const existing = s.get(id);
-  if (!existing) return;
-  existing.audit.push(event);
-  s.set(id, existing);
+  withStore((m) => {
+    const existing = m.get(id);
+    if (!existing) return;
+    existing.audit.push(event);
+    m.set(id, existing);
+  });
 }
 
 /** Record actuals against a sent RFQ and append audit event. */
 export function recordActuals(id: string, actuals: Actuals): RFQ | undefined {
-  const s = getStore();
-  const existing = s.get(id);
-  if (!existing) return undefined;
-  const updated = { ...existing, actuals };
-  s.set(id, updated);
-  appendAudit(id, {
-    at: new Date().toISOString(),
-    actor: Actor.USER,
-    action: AuditAction.ACTUALS_RECORDED,
-    detail: `Actuals recorded — material: $${actuals.materialCost}, setup: ${actuals.setupHours}h, labor: ${actuals.laborHours}h, machine: ${actuals.machineHours}h`,
+  let updated: RFQ | undefined;
+  withStore((m) => {
+    const existing = m.get(id);
+    if (!existing) return;
+    updated = { ...existing, actuals };
+    updated.audit = [
+      ...updated.audit,
+      {
+        at: new Date().toISOString(),
+        actor: Actor.USER,
+        action: AuditAction.ACTUALS_RECORDED,
+        detail: `Actuals recorded — material: $${actuals.materialCost}, setup: ${actuals.setupHours}h, labor: ${actuals.laborHours}h, machine: ${actuals.machineHours}h`,
+      },
+    ];
+    m.set(id, updated);
   });
-  return getRfq(id);
+  return updated;
 }
 
 /** Find an RFQ by externalId (for webhook deduplication). */
@@ -116,7 +163,12 @@ export function findByExternalId(externalId: string): RFQ | undefined {
   return undefined;
 }
 
-/** Reset the store and re-seed with demo data. */
+/** Reset the store: delete data file and re-seed. */
 export function resetStore(): void {
-  store = null; // next getStore() call will re-seed
+  try {
+    if (fs.existsSync(DATA_FILE)) fs.unlinkSync(DATA_FILE);
+  } catch {
+    // ignore
+  }
+  seedAndWrite();
 }
